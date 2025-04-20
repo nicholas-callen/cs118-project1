@@ -1,0 +1,161 @@
+#!/bin/bash
+
+# Define the project name
+NAME="ghcr.io/uclacs118/project1"
+
+# Function to display help
+function show_help() {
+    echo "Usage: $0 [command]"
+    echo "Commands:"
+    echo "  run          Run the local autograder."
+    echo "  interactive  Start an interactive bash session in /autograder."
+    echo "  compile      Run make inside the autograder."
+    echo "  test         Individually run tests in the autograder."
+    echo "  proxy        Start proxy to randomly drop and reorder packets."
+    echo "  zip          Prepare a ZIP file for submission."
+    echo "  clean        Clean up build artifacts."
+    echo "  help         Show this help message."
+}
+
+# Function to pull the latest container and handle updates
+function ensure_container() {
+    echo "Pulling the latest container for $NAME..."
+    if docker pull "$NAME" | grep -q "Downloaded newer image"; then
+        docker rm -f project1_instance
+    fi
+
+    # Check if a container exists
+    CONTAINER_ID=$(docker ps -a -q --filter "name=project1_instance")
+    if [ -z "$CONTAINER_ID" ]; then
+        echo "No existing container found. Creating a new one..."
+        docker create --name project1_instance --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -v $(pwd)/project:/autograder/submission -v $(pwd)/results:/autograder/results --entrypoint tail "$NAME" -f /dev/null
+        CONTAINER_ID=$(docker ps -a -q --filter "name=project1_instance")
+    fi
+
+    # Check if the container is running
+    if [ -z $(docker ps -q --filter "name=project1_instance" --filter "status=running") ]; then
+        echo "Starting the container..."
+        docker start "$CONTAINER_ID"
+    else
+        echo "Container is already running."
+    fi
+
+    echo "Using container: $CONTAINER_ID"
+    export CONTAINER_ID
+}
+
+# Function to run the autograder
+function run_autograder() {
+    ensure_container
+    echo "Running /autograder/run_autograder..."
+    docker exec "$CONTAINER_ID" bash -c "/autograder/run_autograder 2> /dev/null && cat /autograder/results/results.json"
+}
+
+# Function to run a specific test 
+function run_test() {
+    CMD="python3 -m unittest "
+
+    case "$1" in
+        compile)
+            CMD+="test_0_compilation.TestCompilation"
+            ;;
+        handshake)
+            CMD+="test_1_handshake.TestHandshake."
+            CMD+=$2
+            ;;
+        rdt)
+            CMD+="test_2_reliable_data_transport.TestRDT."
+            CMD+=$2
+            ;;
+    esac
+
+    ensure_container
+    echo "Running test" $1 $2
+
+    docker exec -w /autograder/source/tests "$CONTAINER_ID" bash -c "$CMD" 
+
+}
+
+# Start proxy
+function run_proxy() {
+    ensure_container 
+    echo "Running proxy (use port 8080 for the client and 8081 for the server)"
+    echo "Drop Rate: " $1
+    echo "Reorder Rate: " $2
+    trap "docker exec \"$CONTAINER_ID\" bash -c \"killall python3\"" 0 SIGINT SIGSTOP EXIT
+    docker exec -w /autograder/source/tests "$CONTAINER_ID" bash -c "python3 -c \"import utils; utils.proxy(8080, 8081, $1, $2)\""
+    exit
+}
+
+# Function to start an interactive bash session
+function interactive_session() {
+    ensure_container
+    echo "Starting interactive bash session in /autograder..."
+    docker exec -it "$CONTAINER_ID" bash -c "cd /autograder && exec bash"
+}
+
+function compile() {
+    ensure_container
+
+    docker exec -w /autograder/submission "$CONTAINER_ID" make 
+}
+
+# Function to clean up build artifacts
+function clean_project() {
+    echo "Cleaning up build artifacts..."
+    docker rm -f project1_instance
+    docker rmi "$NAME"
+    if [ $? -eq 0 ]; then
+        echo "Cleanup succeeded."
+    else
+        echo "Cleanup failed or no artifacts to remove."
+    fi
+}
+
+# Check if at least one argument is provided
+if [ $# -lt 1 ]; then
+    echo "Error: No command provided."
+    show_help
+    exit 1
+fi
+
+# Handle the first argument as a command
+case "$1" in
+    run)
+        run_autograder
+        ;;
+    test)
+        if [ $# -lt 2 ]; then
+            echo "Error: Provide a test to run"
+            show_help
+            exit 1
+        fi
+        run_test $2 $3
+        ;;
+    interactive)
+        interactive_session
+        ;;
+    clean)
+        clean_project
+        ;;
+    zip)
+        cd project
+        make clean
+        cd ..
+        zip project.zip project/*
+        ;;
+    compile)
+        compile
+        ;;
+    proxy)
+        run_proxy $2 $3
+        ;;
+    help)
+        show_help
+        ;;
+    *)
+        echo "Error: Unknown command '$1'"
+        show_help
+        exit 1
+        ;;
+esac
