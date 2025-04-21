@@ -114,22 +114,17 @@ void listen_loop(int sockfd, struct sockaddr_in* addr, int initial_state,
         packet* tosend = get_data();
         // Data available to send
         if (tosend != NULL) {
-            // TODO
         }
         // Received a packet and must send an ACK
         else if (pure_ack) {
-            // TODO
         }
-        pure_ack = false;
 
         // Check if timer went off
         gettimeofday(&now, NULL);
         if (TV_DIFF(now, start) >= RTO && base_pkt != NULL) {
-            // TODO
         }
         // Duplicate ACKS detected
         else if (dup_acks == DUP_ACKS && base_pkt != NULL) {
-            // TODO
         }
         // No data to send, so restart timer
         else if (base_pkt == NULL) {
