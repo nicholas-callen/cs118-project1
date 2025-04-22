@@ -11,7 +11,7 @@ function show_help() {
     echo "  interactive  Start an interactive bash session in /autograder."
     echo "  compile      Run make inside the autograder."
     echo "  test         Individually run tests in the autograder."
-    echo "  proxy        Start proxy to randomly drop and reorder packets."
+    echo "  proxy        Start proxy with defined packet drop rate and reorder rate."
     echo "  zip          Prepare a ZIP file for submission."
     echo "  clean        Clean up build artifacts."
     echo "  help         Show this help message."
@@ -83,7 +83,7 @@ function run_proxy() {
     echo "Drop Rate: " $1
     echo "Reorder Rate: " $2
     trap "docker exec \"$CONTAINER_ID\" bash -c \"killall python3\"" 0 SIGINT SIGSTOP EXIT
-    docker exec -w /autograder/source/tests "$CONTAINER_ID" bash -c "python3 -c \"import utils; utils.proxy(8080, 8081, $1, $2)\""
+    docker exec -w /autograder/source/tests "$CONTAINER_ID" bash -c "python3 -c \"import utils; utils.proxy(8080, 8081, $1, $2, 0)\""
     exit
 }
 
