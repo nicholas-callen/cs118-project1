@@ -81,6 +81,8 @@ packet* get_data() {
             pkt->flags = ACK;
             pkt->length = htons(0);
             state = NORMAL;
+
+            fprintf(stderr, "Current State: %d\n", state);
             return pkt;
         }
         default: {
@@ -91,15 +93,12 @@ packet* get_data() {
 
 // Process data received from socket
 void recv_data(packet* pkt) {
-    if (true) {
-        print_diag(pkt, RECV);
-    }
-
     switch (state) {
         case SERVER_AWAIT: {
             // SERVER initializes as SERVER_AWAIT. ON RECEIVING VALID SYN:
             // SERVER gets SYN, Sends SYN-ACK
             if (pkt != NULL && pkt->flags & SYN) {
+                print_diag(pkt, RECV, state);
                 state = SERVER_START;
                 ack = ntohs(pkt->seq) + 1;
             }   
@@ -111,6 +110,7 @@ void recv_data(packet* pkt) {
             // CURRENT: Waiting for SYN-ACK
             if (pkt != NULL && pkt->flags == (SYN | ACK) && ntohs(pkt->ack) == seq + 1) {
                 // IF correct ACK is received, move on to next part of handshake
+                print_diag(pkt, RECV, state);
                 state = CLIENT_AWAIT;
                 ack = ntohs(pkt->seq) + 1;
             }   
@@ -119,17 +119,19 @@ void recv_data(packet* pkt) {
         }
         case SERVER_START: {
             // SERVER becomes SERVER_START after receiving SYN 
-            if (pkt != NULL && ntohs(pkt->flags) == (ACK) && ntohs(pkt->ack) == seq + 1) {
+            if (pkt != NULL && pkt->flags == ACK && ntohs(pkt->ack) == seq + 1) {
                 // If correct SYN  ACK  from part 3 of handshake is received, act to normal
+                print_diag(pkt, RECV, state);
                 state = NORMAL;
+                fprintf(stderr, "Current State: %d\n", state);
             }
             return;
         }
         case CLIENT_AWAIT: {
             // CLIENT AWAITS for SYN-ACK
             // Becomes NORMAL after sending ACK
-            if (pkt != NULL && ntohs(pkt->flags) == (SYN | ACK) && ntohs(pkt->ack) == seq + 1) {
-                state = NORMAL;
+            if (pkt != NULL && ntohs(pkt->flags) == SYN | ACK && ntohs(pkt->ack) == seq + 1) {
+                print_diag(pkt, RECV, state);
             }   
             return;
         }
@@ -183,14 +185,14 @@ void listen_loop(int sockfd, struct sockaddr_in* addr, int initial_state,
                                    (struct sockaddr*) addr, &addr_size);
         // If data, process it
         if (bytes_recvd > 0) {
-            // print_diag(pkt, RECV);
+            print_diag(pkt, RECV, state);
             recv_data(pkt);
         }
 
         packet* tosend = get_data();
         // Data available to send
         if (tosend != NULL) {
-            print_diag(tosend, SEND);
+            print_diag(tosend, SEND, state);
             sendto(sockfd, tosend, sizeof(packet) + MAX_PAYLOAD, 0,
                    (struct sockaddr*) addr, addr_size);
         }

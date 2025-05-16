@@ -59,7 +59,7 @@ static inline void print(char* txt) {
     fprintf(stderr, "%s\n", txt);
 }
 
-static inline void print_diag(packet* pkt, int diag) {
+static inline void print_diag(packet* pkt, int diag, int state) {
     switch (diag) {
     case RECV:
         fprintf(stderr, "RECV");
@@ -80,7 +80,7 @@ static inline void print_diag(packet* pkt, int diag) {
     fprintf(stderr, " %hu ACK %hu LEN %hu WIN %hu FLAGS ", ntohs(pkt->seq),
             ntohs(pkt->ack), ntohs(pkt->length), ntohs(pkt->win));
     if (!syn && !ack) {
-        fprintf(stderr, "NONE");
+        fprintf(stderr, "NONE ");
     } else {
         if (syn) {
             fprintf(stderr, "SYN ");
@@ -89,7 +89,7 @@ static inline void print_diag(packet* pkt, int diag) {
             fprintf(stderr, "ACK ");
         }
     }
-    fprintf(stderr, "\n");
+    fprintf(stderr, " -- Current state = %i\n", state);
 }
 
 static inline void print_buf(buffer_node* node) {

@@ -27,8 +27,7 @@ int main(int argc, char** argv) {
     // Set sending port
     int PORT = atoi(argv[2]);
     server_addr.sin_port = htons(PORT); // Big endian
-
-    
+  
     init_io();
     listen_loop(sockfd, &server_addr, CLIENT_START, input_io, output_io);
 
