@@ -59,7 +59,7 @@ static inline void print(char* txt) {
     fprintf(stderr, "%s\n", txt);
 }
 
-static inline void print_diag(packet* pkt, int diag, int state) {
+static inline void print_diag(packet* pkt, int diag) {
     switch (diag) {
     case RECV:
         fprintf(stderr, "RECV");
@@ -89,7 +89,8 @@ static inline void print_diag(packet* pkt, int diag, int state) {
             fprintf(stderr, "ACK ");
         }
     }
-    fprintf(stderr, " -- Current state = %i\n", state);
+    fprintf(stderr, "\n");
+    // fprintf(stderr, " -- Current state = %i\n", state);
 }
 
 static inline void print_buf(buffer_node* node) {

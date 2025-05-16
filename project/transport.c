@@ -40,6 +40,11 @@ void (*output)(uint8_t*, size_t);   // Output data from layer
 struct timeval start; // Last packet sent at this time
 struct timeval now;   // Temp for current time
 
+bool CLIENT_SYN_SENT = false;
+bool SERVER_SYNACK_SENT = false;
+bool CLIENT_ACK_SENT = false;
+
+
 // Get data from standard input / make handshake packets
 /* SERVER_AWAIT: Waiting for the clien
    CLIENT_START: CLIENT sends SYN
@@ -57,33 +62,43 @@ packet* get_data() {
         case CLIENT_START: {
             // CLIENT initializes as CLIENT_START
             // CLIENT sends SYN
-            packet* pkt = malloc(sizeof(packet) + MAX_PAYLOAD);
+            if(!CLIENT_SYN_SENT) {
+                packet* pkt = malloc(sizeof(packet) + MAX_PAYLOAD);
 
-            pkt->seq = htons(seq);
-            pkt->flags = SYN;
-            pkt->length = htons(0);
-            return pkt;
+                pkt->seq = htons(seq);
+                pkt->flags = SYN;
+                pkt->length = htons(0);
+                CLIENT_SYN_SENT = true;
+                return pkt;
+            }
+            return NULL;
         }
         case SERVER_START: {
             // SERVER becomes SERVER_START after receiving SYN 
-            packet* pkt = malloc(sizeof(packet) + MAX_PAYLOAD);
-            pkt->seq = htons(seq);
-            pkt->ack = htons(ack);
-            pkt->flags = SYN | ACK;
-            pkt->length = htons(0);
-            return pkt;
+            if (!SERVER_SYNACK_SENT) {
+                packet* pkt = malloc(sizeof(packet) + MAX_PAYLOAD);
+                pkt->seq = htons(seq);
+                pkt->ack = htons(ack);
+                pkt->flags = SYN | ACK;
+                pkt->length = htons(0);
+                SERVER_SYNACK_SENT = true;
+                return pkt;
+            }
+            return NULL;
         }
         case CLIENT_AWAIT: { 
             // CLIENT becomes CLIENT_AWAIT after receiving SYN-ACK
-            packet* pkt = malloc(sizeof(packet) + MAX_PAYLOAD);
-            pkt->seq = htons(seq);
-            pkt->ack = htons(ack); 
-            pkt->flags = ACK;
-            pkt->length = htons(0);
-            state = NORMAL;
-
-            fprintf(stderr, "Current State: %d\n", state);
-            return pkt;
+            if (!CLIENT_ACK_SENT) {
+                packet* pkt = malloc(sizeof(packet) + MAX_PAYLOAD);
+                pkt->seq = htons(seq);
+                pkt->ack = htons(ack); 
+                pkt->flags = ACK;
+                pkt->length = htons(0);
+                state = NORMAL;
+                CLIENT_ACK_SENT = true;
+                return pkt;
+            }
+            return NULL;
         }
         default: {
             return NULL;
@@ -120,7 +135,6 @@ void recv_data(packet* pkt) {
             if (pkt != NULL && pkt->flags == ACK && ntohs(pkt->ack) == seq + 1) {
                 // If correct SYN  ACK  from part 3 of handshake is received, act to normal
                  state = NORMAL;
-                fprintf(stderr, "Current State: %d\n", state);
             }
             return;
         }
@@ -132,7 +146,6 @@ void recv_data(packet* pkt) {
             return;
         }
         default: {
-
         }
     }
 }
@@ -181,14 +194,16 @@ void listen_loop(int sockfd, struct sockaddr_in* addr, int initial_state,
                                    (struct sockaddr*) addr, &addr_size);
         // If data, process it
         if (bytes_recvd > 0) {
-             recv_data(pkt);
+            print_diag(pkt, RECV);
+            recv_data(pkt);
         }
 
         packet* tosend = get_data();
         // Data available to send
         if (tosend != NULL) {
-             sendto(sockfd, tosend, sizeof(packet) + MAX_PAYLOAD, 0,
-                   (struct sockaddr*) addr, addr_size);
+            print_diag(pkt, SEND);
+            sendto(sockfd, tosend, sizeof(packet) + MAX_PAYLOAD, 0,
+                (struct sockaddr*) addr, addr_size);
         }
         // Received a packet and must send an ACK
         else if (pure_ack) {
