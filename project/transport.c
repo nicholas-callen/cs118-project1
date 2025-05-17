@@ -150,7 +150,7 @@ void queue(packet* pkt) {
 */
 
 bool is_data_packet(packet* pkt) {
-    return (ntohs(pkt->length) > 0) || (pkt->flags == 0);
+    return (ntohs(pkt->length) > 0) || (ntohs(pkt->flags) == 0);
 }
 
 packet* get_data() {
@@ -168,7 +168,7 @@ packet* get_data() {
                 packet* pkt = malloc(sizeof(packet));
 
                 pkt->seq = htons(seq);
-                pkt->flags = SYN;
+                pkt->flags = htons(SYN);
                 pkt->length = htons(0);
                 CLIENT_SYN_SENT = true;
                 return pkt;
@@ -181,9 +181,10 @@ packet* get_data() {
                 packet* pkt = malloc(sizeof(packet));
                 pkt->seq = htons(seq);
                 pkt->ack = htons(ack);
-                pkt->flags = SYN | ACK;
+                pkt->flags = htons(SYN | ACK);
                 pkt->length = htons(0);
                 SERVER_SYNACK_SENT = true;
+                seq++;
                 return pkt;
             }
             return NULL;
@@ -191,12 +192,12 @@ packet* get_data() {
         case CLIENT_AWAIT: { 
             // CLIENT becomes CLIENT_AWAIT after receiving SYN-ACK
             if (!CLIENT_ACK_SENT) {
+                seq++;
                 packet* pkt = malloc(sizeof(packet));
                 pkt->seq = htons(seq);
                 pkt->ack = htons(ack); 
-                pkt->flags = ACK;
+                pkt->flags = htons(ACK);
                 pkt->length = htons(0);
-                state = NORMAL;
                 CLIENT_ACK_SENT = true;
                 state = NORMAL;
                 return pkt;
@@ -222,7 +223,7 @@ packet* get_data() {
             pkt->ack = htons(ack);
             pkt->length = htons(bytes_read);
             pkt->win = htons(our_max_receiving_window);
-            pkt->flags = 0;
+            pkt->flags = htons(0);
             pkt->unused = 0;
             memcpy(pkt->payload, buffer, bytes_read);
         
@@ -256,27 +257,26 @@ void recv_data(packet* pkt) {
         case SERVER_AWAIT: {
             // SERVER initializes as SERVER_AWAIT. ON RECEIVING VALID SYN:
             // SERVER gets SYN, Sends SYN-ACK
-            if (pkt != NULL && (pkt->flags) & SYN) {
+            if (pkt != NULL && ntohs(pkt->flags) & SYN) {
                  state = SERVER_START;
                 ack = ntohs(pkt->seq) + 1;
-            }   
-            return;
+            }  
+            return; 
         }
         case CLIENT_START: {
             // CLIENT initializes as CLIENT_START
             // CLIENT sends SYN
             // CURRENT: Waiting for SYN-ACK
-            if (pkt != NULL && pkt->flags == (SYN | ACK) && ntohs(pkt->ack) == seq + 1) {
+            if (pkt != NULL && ntohs(pkt->flags) == (SYN | ACK) && ntohs(pkt->ack) == seq + 1) {
                 // IF correct ACK is received, move on to next part of handshake
                 state = CLIENT_AWAIT;
                 ack = ntohs(pkt->seq) + 1;
-            }   
-
-            return;
+            }
+            return;   
         }
         case SERVER_START: {
             // SERVER becomes SERVER_START after receiving SYN 
-            if (pkt != NULL && pkt->flags == ACK && ntohs(pkt->ack) == seq + 1) {
+            if (pkt != NULL && ntohs(pkt->flags) == ACK && ntohs(pkt->ack) == seq + 1) {
                 // If correct SYN  ACK  from part 3 of handshake is received, act to normal
                  state = NORMAL;
                  ack = ntohs(pkt->seq) + 1;
@@ -287,7 +287,6 @@ void recv_data(packet* pkt) {
             // CLIENT AWAITS for SYN-ACK
             // Becomes NORMAL after sending ACK
             state = NORMAL;
-
             return;
         }
         default: {
@@ -390,6 +389,8 @@ void listen_loop(int sockfd, struct sockaddr_in* addr, int initial_state,
     close(rfd);
     srand(r);
     seq = (rand() % 10) * 100 + 100;
+    // if (state == CLIENT_START) seq = 456; // Match example
+    // if (state == SERVER_AWAIT) seq = 789;
 
     // Setting timers
     gettimeofday(&now, NULL);
@@ -420,7 +421,7 @@ void listen_loop(int sockfd, struct sockaddr_in* addr, int initial_state,
         // Data available to send
         if (tosend != NULL) {
             if (debug)
-                print_diag(pkt, SEND);
+                print_diag(tosend, SEND);
 
             sendto(sockfd, tosend, sizeof(packet) + MAX_PAYLOAD, 0,
                 (struct sockaddr*) addr, addr_size);
