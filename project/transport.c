@@ -156,7 +156,7 @@ void recv_data(packet* pkt) {
         case SERVER_AWAIT: {
             // SERVER initializes as SERVER_AWAIT. ON RECEIVING VALID SYN:
             // SERVER gets SYN, Sends SYN-ACK
-            if (pkt != NULL && pkt->flags & SYN) {
+            if (pkt != NULL && (pkt->flags) & SYN) {
                  state = SERVER_START;
                 ack = ntohs(pkt->seq) + 1;
             }   
@@ -190,13 +190,37 @@ void recv_data(packet* pkt) {
             return;
         }
         default: {
-            if (pkt != NULL) {
-                int payload_len = ntohs(pkt->length);
-                if (payload_len > 0) {
-                    output(pkt->payload, payload_len);
-                    ack = ntohs(pkt->seq) + payload_len;
-                    pure_ack = true;
+            if (pkt == NULL) return;
+            // Receiver; process incoming data
+            int payload_len = ntohs(pkt->length);
+            if (payload_len > 0) {
+                output(pkt->payload, payload_len);
+                ack = ntohs(pkt->seq) + payload_len;
+                pure_ack = true;
+            }
+        
+            // Sender; process incoming ACKs
+            their_receiving_window = ntohs(pkt->win);
+            uint16_t incoming_ack = ntohs(pkt->ack);
+        
+            if (incoming_ack > last_ack) {
+                while (send_buf != NULL &&
+                       ntohs(send_buf->pkt->seq) + ntohs(send_buf->pkt->length) <= incoming_ack) {
+                    buffer_node* tmp = send_buf;
+                    send_buf = send_buf->next;
+                    free(tmp->pkt);
+                    free(tmp);
                 }
+        
+                base_pkt = (send_buf != NULL) ? send_buf->pkt : NULL;
+                our_send_window = 0;
+                last_ack = incoming_ack;
+                dup_acks = 0;
+                seq = incoming_ack;
+
+            }
+            else if (incoming_ack == last_ack) {
+                dup_acks += 1;
             }
             return;
         }
@@ -261,14 +285,39 @@ void listen_loop(int sockfd, struct sockaddr_in* addr, int initial_state,
         }
         // Received a packet and must send an ACK
         else if (pure_ack) {
-        }
+            packet* ack_pkt = malloc(sizeof(packet));
+            if (!ack_pkt) return;
+        
+            ack_pkt->seq = htons(seq);
+            ack_pkt->ack = htons(ack);
+            ack_pkt->length = htons(0);
+            ack_pkt->win = htons(our_max_receiving_window);
+            ack_pkt->flags = htons(ACK);
+            ack_pkt->unused = 0;
+        
+            sendto(sockfd, ack_pkt, sizeof(packet), 0,
+                   (struct sockaddr*) addr, addr_size);
+            print_diag(ack_pkt, SEND);
+        
+            free(ack_pkt);
+            pure_ack = false;
+        }        
 
         // Check if timer went off
         gettimeofday(&now, NULL);
         if (TV_DIFF(now, start) >= RTO && base_pkt != NULL) {
+            fprintf(stderr, "Timeout: Resending base packet (seq %hu)\n", ntohs(base_pkt->seq));
+            sendto(sockfd, base_pkt, sizeof(packet) + ntohs(base_pkt->length), 0,
+                    (struct sockaddr*) addr, addr_size);
+            gettimeofday(&start, NULL);
         }
         // Duplicate ACKS detected
-        else if (dup_acks == DUP_ACKS && base_pkt != NULL) {
+        else if (dup_acks == DUP_ACKS && base_pkt != NULL){
+            fprintf(stderr, "Triple duplicate ACKs: Fast retransmit (seq %hu)\n", ntohs(base_pkt->seq));
+            sendto(sockfd, base_pkt, sizeof(packet) + ntohs(base_pkt->length), 0,
+                   (struct sockaddr*) addr, addr_size);
+            gettimeofday(&start, NULL);
+            dup_acks = 0;
         }
         // No data to send, so restart timer
         else if (base_pkt == NULL) {
