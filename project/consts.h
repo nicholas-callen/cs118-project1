@@ -51,7 +51,7 @@ typedef struct {
 
 typedef struct buffer_node {
     struct buffer_node* next;
-    packet pkt;
+    packet* pkt;
 } buffer_node;
 
 // Helpers
@@ -75,8 +75,11 @@ static inline void print_diag(packet* pkt, int diag) {
         break;
     }
 
-    bool syn = pkt->flags & SYN;
-    bool ack = pkt->flags & ACK;
+    uint16_t flags = ntohs(pkt->flags);
+    bool syn = flags & SYN;
+    bool ack = flags & ACK;
+    //bool syn = pkt->flags & SYN;
+    //bool ack = pkt->flags & ACK;
     fprintf(stderr, " %hu ACK %hu LEN %hu WIN %hu FLAGS ", ntohs(pkt->seq),
             ntohs(pkt->ack), ntohs(pkt->length), ntohs(pkt->win));
     if (!syn && !ack) {
@@ -97,7 +100,7 @@ static inline void print_buf(buffer_node* node) {
     fprintf(stderr, "BUF ");
 
     while (node != NULL) {
-        fprintf(stderr, "%hu ", htons(node->pkt.seq));
+        fprintf(stderr, "%hu ", htons(node->pkt->seq));
         node = node->next;
     }
     fprintf(stderr, "\n");

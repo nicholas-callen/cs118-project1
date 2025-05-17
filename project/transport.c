@@ -66,7 +66,7 @@ packet* get_data() {
                 packet* pkt = malloc(sizeof(packet) + MAX_PAYLOAD);
 
                 pkt->seq = htons(seq);
-                pkt->flags = SYN;
+                pkt->flags = htons(SYN);
                 pkt->length = htons(0);
                 CLIENT_SYN_SENT = true;
                 return pkt;
@@ -79,7 +79,7 @@ packet* get_data() {
                 packet* pkt = malloc(sizeof(packet) + MAX_PAYLOAD);
                 pkt->seq = htons(seq);
                 pkt->ack = htons(ack);
-                pkt->flags = SYN | ACK;
+                pkt->flags = htons(SYN | ACK);
                 pkt->length = htons(0);
                 SERVER_SYNACK_SENT = true;
                 return pkt;
@@ -92,7 +92,7 @@ packet* get_data() {
                 packet* pkt = malloc(sizeof(packet) + MAX_PAYLOAD);
                 pkt->seq = htons(seq);
                 pkt->ack = htons(ack); 
-                pkt->flags = ACK;
+                pkt->flags = htons(ACK);
                 pkt->length = htons(0);
                 state = NORMAL;
                 CLIENT_ACK_SENT = true;
@@ -100,6 +100,52 @@ packet* get_data() {
             }
             return NULL;
         }
+        case NORMAL: {
+            if (our_send_window >= their_receiving_window) {
+                return NULL;
+            }
+        
+            uint8_t buffer[MAX_PAYLOAD] = {0};
+            ssize_t bytes_read = input(buffer, MAX_PAYLOAD);
+        
+            if (bytes_read <= 0) {
+                return NULL;
+            }
+        
+            packet* pkt = malloc(sizeof(packet) + bytes_read);
+            if (!pkt) return NULL;
+        
+            pkt->seq = htons(seq);
+            pkt->ack = htons(ack);
+            pkt->length = htons(bytes_read);
+            pkt->win = htons(our_max_receiving_window);
+            pkt->flags = 0;
+            pkt->unused = 0;
+            memcpy(pkt->payload, buffer, bytes_read);
+        
+            our_send_window += bytes_read;
+            seq += bytes_read;
+        
+            buffer_node* node = malloc(sizeof(buffer_node));
+            if (!node) {
+                free(pkt);
+                return NULL;
+            }
+            node->pkt = pkt;
+            node->next = NULL;
+        
+            if (send_buf == NULL) {
+                send_buf = node;
+                base_pkt = pkt;
+            } else {
+                buffer_node* cur = send_buf;
+                while (cur->next) cur = cur->next;
+                cur->next = node;
+            }
+        
+            gettimeofday(&start, NULL);
+            return pkt;
+        }        
         default: {
             return NULL;
         }
@@ -112,7 +158,7 @@ void recv_data(packet* pkt) {
         case SERVER_AWAIT: {
             // SERVER initializes as SERVER_AWAIT. ON RECEIVING VALID SYN:
             // SERVER gets SYN, Sends SYN-ACK
-            if (pkt != NULL && pkt->flags & SYN) {
+            if (pkt != NULL && (ntohs(pkt->flags) & SYN)) {
                  state = SERVER_START;
                 ack = ntohs(pkt->seq) + 1;
             }   
@@ -122,7 +168,7 @@ void recv_data(packet* pkt) {
             // CLIENT initializes as CLIENT_START
             // CLIENT sends SYN
             // CURRENT: Waiting for SYN-ACK
-            if (pkt != NULL && pkt->flags == (SYN | ACK) && ntohs(pkt->ack) == seq + 1) {
+            if (pkt != NULL && ntohs(pkt->flags) == (SYN | ACK) && ntohs(pkt->ack) == seq + 1) {
                 // IF correct ACK is received, move on to next part of handshake
                  state = CLIENT_AWAIT;
                 ack = ntohs(pkt->seq) + 1;
@@ -132,17 +178,10 @@ void recv_data(packet* pkt) {
         }
         case SERVER_START: {
             // SERVER becomes SERVER_START after receiving SYN 
-            if (pkt != NULL && pkt->flags == ACK && ntohs(pkt->ack) == seq + 1) {
+            if (pkt != NULL && ntohs(pkt->flags) == ACK && ntohs(pkt->ack) == seq + 1) {
                 // If correct SYN  ACK  from part 3 of handshake is received, act to normal
                  state = NORMAL;
             }
-            return;
-        }
-        case CLIENT_AWAIT: {
-            // CLIENT AWAITS for SYN-ACK
-            // Becomes NORMAL after sending ACK
-            if (pkt != NULL && ntohs(pkt->flags) == SYN | ACK && ntohs(pkt->ack) == seq + 1) {
-                            }   
             return;
         }
         default: {
@@ -201,8 +240,10 @@ void listen_loop(int sockfd, struct sockaddr_in* addr, int initial_state,
         packet* tosend = get_data();
         // Data available to send
         if (tosend != NULL) {
-            print_diag(pkt, SEND);
-            sendto(sockfd, tosend, sizeof(packet) + MAX_PAYLOAD, 0,
+            print_diag(tosend, SEND);
+            //sendto(sockfd, tosend, sizeof(packet) + MAX_PAYLOAD, 0,
+            sendto(sockfd, tosend, sizeof(packet) + ntohs(tosend->length), 0,
+
                 (struct sockaddr*) addr, addr_size);
         }
         // Received a packet and must send an ACK
