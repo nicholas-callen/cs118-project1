@@ -121,13 +121,15 @@ void queue(packet* pkt) {
             // At Head
             node->next = rec_head;
             rec_head = node;
+            pure_ack = true;
         } else {
             // At Middle or Tail 
             prev->next = node;
             node->next = cur;
             if (cur == NULL) 
                 rec_tail = node; 
-        }
+            pure_ack = true;
+        }   
     }
     // Output Decision
     // Process current in order ack and all in-order preceding packets
@@ -286,7 +288,6 @@ void recv_data(packet* pkt) {
         case CLIENT_AWAIT: {
             // CLIENT AWAITS for SYN-ACK
             // Becomes NORMAL after sending ACK
-            state = NORMAL;
             return;
         }
         default: {
