@@ -318,9 +318,14 @@ void recv_data(packet* pkt) {
                     free(tmp->pkt);
                     free(tmp);
                 }
-        
+                uint32_t bytes_acked = incoming_ack - last_ack;
+                if (bytes_acked > our_send_window) {
+                    our_send_window = 0;
+                } else {
+                    our_send_window -= bytes_acked;
+                }
+
                 base_pkt = (send_buf != NULL) ? send_buf->pkt : NULL;
-                our_send_window = 0;
                 last_ack = incoming_ack;
                 dup_acks = 0;
                 seq = incoming_ack;
@@ -389,7 +394,7 @@ void listen_loop(int sockfd, struct sockaddr_in* addr, int initial_state,
     close(rfd);
     srand(r);
     seq = (rand() % 10) * 100 + 100;
-    // if (state == CLIENT_START) seq = 456; // Match example
+    // if (state == CLIENT_START) seq = 456; // Matching ex in spec
     // if (state == SERVER_AWAIT) seq = 789;
 
     // Setting timers
@@ -425,7 +430,7 @@ void listen_loop(int sockfd, struct sockaddr_in* addr, int initial_state,
             if (debug)
                 print_diag(tosend, SEND);
 
-            sendto(sockfd, tosend, sizeof(packet) + MAX_PAYLOAD, 0,
+            sendto(sockfd, tosend, sizeof(packet) + ntohs(tosend->length), 0,
                 (struct sockaddr*) addr, addr_size);
 
             if (is_data_packet(tosend)) {
