@@ -17,7 +17,7 @@
  * feel free to edit/remove.
  */
 
-bool debug = true;
+bool debug = false;
 bool test_cases = false;
 int state = 0;           // Current state for handshake
 int our_send_window = 0; // Total number of bytes in our send buf
@@ -186,7 +186,6 @@ packet* get_data() {
                 pkt->flags = htons(SYN | ACK);
                 pkt->length = htons(0);
                 SERVER_SYNACK_SENT = true;
-                seq++;
                 return pkt;
             }
             return NULL;
@@ -269,7 +268,7 @@ void recv_data(packet* pkt) {
             // CLIENT initializes as CLIENT_START
             // CLIENT sends SYN
             // CURRENT: Waiting for SYN-ACK
-            if (pkt != NULL && ntohs(pkt->flags) == (SYN | ACK) && ntohs(pkt->ack) == seq + 1) {
+            if (pkt != NULL && ntohs(pkt->flags) == (SYN | ACK) && ntohs(pkt->ack) == seq) {
                 // IF correct ACK is received, move on to next part of handshake
                 state = CLIENT_AWAIT;
                 ack = ntohs(pkt->seq) + 1;
@@ -278,7 +277,7 @@ void recv_data(packet* pkt) {
         }
         case SERVER_START: {
             // SERVER becomes SERVER_START after receiving SYN 
-            if (pkt != NULL && ntohs(pkt->flags) == ACK && ntohs(pkt->ack) == seq + 1) {
+            if (pkt != NULL && ntohs(pkt->flags) == ACK && ntohs(pkt->ack) == seq) {
                 // If correct SYN  ACK  from part 3 of handshake is received, act to normal
                  state = NORMAL;
                  ack = ntohs(pkt->seq) + 1;
@@ -413,8 +412,10 @@ void listen_loop(int sockfd, struct sockaddr_in* addr, int initial_state,
                                    (struct sockaddr*) addr, &addr_size);
         // If data, process it
         if (bytes_recvd > 0) {
-            if (debug) 
+            if (debug) {
                 print_diag(pkt, RECV);
+                fprintf(stderr, "Received %d bytes\n", bytes_recvd);
+            }
             recv_data(pkt);
         }
 
@@ -431,8 +432,12 @@ void listen_loop(int sockfd, struct sockaddr_in* addr, int initial_state,
                 gettimeofday(&start,NULL);
             }
             if (!is_data_packet(tosend)) {
+                seq++;
                 free(tosend);
             }
+
+            if(debug) 
+                fprintf("State: %i  -  SEQ: %i  -  ACK: %i\n", state, seq, ack);
         }
         // Received a packet and must send an ACK
         else if (pure_ack) {
@@ -458,14 +463,16 @@ void listen_loop(int sockfd, struct sockaddr_in* addr, int initial_state,
         // Check if timer went off
         gettimeofday(&now, NULL);
         if (TV_DIFF(now, start) >= RTO && base_pkt != NULL) {
-            fprintf(stderr, "Timeout: Resending base packet (seq %hu)\n", ntohs(base_pkt->seq));
+            if (debug)
+                fprintf(stderr, "Timeout: Resending base packet (seq %hu)\n", ntohs(base_pkt->seq));
             sendto(sockfd, base_pkt, sizeof(packet) + ntohs(base_pkt->length), 0,
                     (struct sockaddr*) addr, addr_size);
             gettimeofday(&start, NULL);
         }
         // Duplicate ACKS detected
         else if (dup_acks == DUP_ACKS && base_pkt != NULL){
-            fprintf(stderr, "Triple duplicate ACKs: Fast retransmit (seq %hu)\n", ntohs(base_pkt->seq));
+            if (debug)
+                fprintf(stderr, "Triple duplicate ACKs: Fast retransmit (seq %hu)\n", ntohs(base_pkt->seq));
             sendto(sockfd, base_pkt, sizeof(packet) + ntohs(base_pkt->length), 0,
                    (struct sockaddr*) addr, addr_size);
             gettimeofday(&start, NULL);
