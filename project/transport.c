@@ -16,6 +16,7 @@
  */
 
 bool debug = true;
+bool extra_debug = false;
 bool test_cases = false;
 int state = 0;           // Current state for handshake
 int our_send_window = 0; // Total number of bytes in our send buf
@@ -68,6 +69,7 @@ packet* process_pkt() {
     free(old_head);
 
     ack = node_seq + 1;
+    pure_ack = true;
     our_max_receiving_window += 500;
     return pkt;
 }
@@ -129,14 +131,6 @@ void queue(packet* pkt) {
             pure_ack = true;
         }   
     }
-    // Output Decision
-    // Process current in order ack and all in-order preceding packets
-    packet* head;
-    while ((head = process_pkt()) != NULL) {
-        output(head->payload, ntohs(head->length));
-        free(head);
-        pure_ack = true;
-    }
 }
 
 // Get data from standard input / make handshake packets
@@ -187,22 +181,59 @@ packet* get_data() {
             }
             return NULL;
         }
-        case CLIENT_AWAIT: { 
-            // CLIENT becomes CLIENT_AWAIT after receiving SYN-ACK
+        case CLIENT_AWAIT: {
             if (!CLIENT_ACK_SENT) {
-                packet* pkt = malloc(sizeof(packet));
-                pkt->seq = htons(seq);
-                pkt->ack = htons(ack); 
-                pkt->flags = ACK;
-                pkt->length = htons(0);
-                pkt->win = htons(our_max_receiving_window);
+                uint8_t buffer[MAX_PAYLOAD] = {0};
+                ssize_t bytes_read = input(buffer, MAX_PAYLOAD);
+        
+                packet* pkt = NULL;
+                if (bytes_read > 0) {
+                    // Data + ACK (adjust memory size!)
+                    pkt = malloc(sizeof(packet) + bytes_read);
+                    if (!pkt) return NULL;
+        
+                    pkt->seq = htons(seq);
+                    pkt->ack = htons(ack);
+                    pkt->length = htons(bytes_read);
+                    pkt->win = htons(our_max_receiving_window);
+                    pkt->flags = ACK;
+                    pkt->unused = 0;
+                    memcpy(pkt->payload, buffer, bytes_read);
+        
+                    // Add to send_buf
+                    buffer_node* node = malloc(sizeof(buffer_node));
+                    node->pkt = pkt;
+                    node->next = NULL;
+                    if (!send_buf) {
+                        send_buf = node;
+                        base_pkt = pkt;
+                    } else {
+                        buffer_node* cur = send_buf;
+                        while (cur->next) cur = cur->next;
+                        cur->next = node;
+                    }
+        
+                    our_send_window += bytes_read;
+                    seq += 1;
+                } else {
+                    // Pure ACK only
+                    pkt = malloc(sizeof(packet));
+                    if (!pkt) return NULL;
+        
+                    pkt->seq = htons(0);
+                    pkt->ack = htons(ack);
+                    pkt->length = htons(0);
+                    pkt->win = htons(our_max_receiving_window);
+                    pkt->flags = ACK;
+                    pkt->unused = 0;
+                }
+        
                 CLIENT_ACK_SENT = true;
                 state = NORMAL;
-                seq++;
                 return pkt;
             }
             return NULL;
-        }
+        }   
         default: {
             if (our_send_window >= their_receiving_window) {
                 return NULL;
@@ -214,13 +245,19 @@ packet* get_data() {
             if (bytes_read <= 0) {
                 return NULL;
             }
-        
+            if (extra_debug) {
+                fprintf(stderr, "[GET_DATA] Read %zd bytes from input\n", bytes_read);            
+            }
             packet* pkt = malloc(sizeof(packet) + bytes_read);
             if (!pkt) return NULL;
         
             pkt->seq = htons(seq);
             pkt->ack = htons(ack);
             pkt->length = htons(bytes_read);
+            if(extra_debug){
+                fprintf(stderr, "[GET_DATA] Sending payload of length %zd, htons: %04x\n", bytes_read, htons(bytes_read));
+            }
+
             pkt->win = htons(our_max_receiving_window);
             pkt->flags = ACK;
             pkt->unused = 0;
@@ -282,6 +319,14 @@ void recv_data(packet* pkt) {
                 // If correct SYN  ACK  from part 3 of handshake is received, act to normal
                  state = NORMAL;
                  ack = ntohs(pkt->seq) + 1;
+
+                 if (ntohs(pkt->length) > 0) {
+                    packet* copy = malloc(sizeof(packet) + ntohs(pkt->length));
+                    if (copy) {
+                        memcpy(copy, pkt, sizeof(packet) + ntohs(pkt->length));
+                        queue(copy);
+                    }
+                }
             }
             return;
         }
@@ -300,7 +345,12 @@ void recv_data(packet* pkt) {
                 if (!copy) return;
                 memcpy(copy, pkt, sizeof(packet) + payload_len);
                 queue(copy); 
-                pure_ack = true;
+
+                while ((copy = process_pkt()) != NULL) {
+                    output(copy->payload, ntohs(copy->length));
+                    free(copy);
+                    pure_ack = true;
+                }
             }
         
             // Sender and process incoming ACKs
@@ -308,30 +358,37 @@ void recv_data(packet* pkt) {
             uint16_t incoming_ack = ntohs(pkt->ack);
         
             if (incoming_ack > last_ack) {
-                while (send_buf != NULL && ntohs(send_buf->pkt->seq) + 1 <= incoming_ack) {
-                    uint16_t pkt_seq = ntohs(send_buf->pkt->seq);
-                    uint16_t pkt_len = ntohs(send_buf->pkt->length);
-                    uint16_t pkt_end = pkt_seq + 1;
-                    
+                uint32_t bytes_freed = 0;
+            
+                while (send_buf != NULL &&
+                       ntohs(send_buf->pkt->seq) + 1 <= incoming_ack) {
                     if (base_pkt == send_buf->pkt) {
                         base_pkt = (send_buf->next != NULL) ? send_buf->next->pkt : NULL;
                     }
-
+            
+                    bytes_freed += ntohs(send_buf->pkt->length);
+            
                     buffer_node* tmp = send_buf;
                     send_buf = send_buf->next;
                     free(tmp->pkt);
                     free(tmp);
                 }
-                uint32_t packets_acked = incoming_ack - last_ack;
-                if (packets_acked > our_send_window) {
+            
+                if (bytes_freed > our_send_window) {
                     our_send_window = 0;
                 } else {
-                    our_send_window -= packets_acked * MAX_PAYLOAD;
+                    our_send_window -= bytes_freed;
                 }
             
                 last_ack = incoming_ack;
                 dup_acks = 0;
-            }
+
+                if (seq < incoming_ack) {
+                    // This should be ok, if the rest is properly handled
+                    // And incoming ACKs  should only ever be greater than seq
+                    seq = incoming_ack;
+                }
+            }            
             else if (incoming_ack == last_ack) {
                 dup_acks += 1;
             }
@@ -421,8 +478,6 @@ void listen_loop(int sockfd, struct sockaddr_in* addr, int initial_state,
             if (debug) {
                 print_diag(pkt, RECV);
             }
-                // fprintf(stderr, "Received %d bytes\n", bytes_recvd);
-            // }
             recv_data(pkt);
         }
 
@@ -431,19 +486,21 @@ void listen_loop(int sockfd, struct sockaddr_in* addr, int initial_state,
         if (tosend != NULL) {
             if (debug) {
                 print_diag(tosend, SEND);
-            }
 
+                if(extra_debug)
+                    fprintf(stderr, "[About to Send] Sending packet: SEQ=%u, ACK=%u, LEN=%u, WIN=%u, FLAGS=%u\n",
+                        ntohs(pkt->seq), ntohs(pkt->ack), ntohs(pkt->length),
+                        ntohs(pkt->win), pkt->flags);
+            }
             sendto(sockfd, tosend, sizeof(packet) + ntohs(tosend->length), 0,
                 (struct sockaddr*) addr, addr_size);
 
             if (is_data_packet(tosend)) {
                 gettimeofday(&start,NULL);
             }
-            // if (!is_data_packet(tosend)) {
-            //     free(tosend);
-            // }
 
-            if(debug) 
+
+            if(extra_debug) 
                 fprintf("State: %i  -  SEQ: %i  -  ACK: %i\n", state, seq, ack);
 
             if (!(send_buf && tosend == base_pkt)) {
@@ -455,7 +512,7 @@ void listen_loop(int sockfd, struct sockaddr_in* addr, int initial_state,
             packet* ack_pkt = malloc(sizeof(packet));
             if (!ack_pkt) return;
         
-            ack_pkt->seq = htons(seq);
+            ack_pkt->seq = htons(0);
             ack_pkt->ack = htons(ack);
             ack_pkt->length = htons(0);
             ack_pkt->win = htons(our_max_receiving_window);
