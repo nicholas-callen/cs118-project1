@@ -75,7 +75,7 @@ static inline void print_diag(packet* pkt, int diag) {
         break;
     }
 
-    uint16_t flags = ntohs(pkt->flags);
+    uint16_t flags = pkt->flags;
     bool syn = flags & SYN;
     bool ack = flags & ACK;
     //bool syn = pkt->flags & SYN;

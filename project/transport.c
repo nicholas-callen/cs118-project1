@@ -9,21 +9,18 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
-#include "io.h"
-
 /*
  * the following variables are only informational, 
  * not necessarily required for a valid implementation.
  * feel free to edit/remove.
  */
 
-bool debug = false;
+bool debug = true;
 bool test_cases = false;
 int state = 0;           // Current state for handshake
 int our_send_window = 0; // Total number of bytes in our send buf
 int their_receiving_window = MIN_WINDOW;   // Receiver window size
 int our_max_receiving_window = MIN_WINDOW; // Our max receiving window
-int our_recv_window = 0;                   // Bytes in our recv buf
 int dup_acks = 0;        // Duplicate acknowledgements received
 uint32_t ack = 0;        // Acknowledgement number
 uint32_t seq = 0;        // Sequence number
@@ -70,7 +67,8 @@ packet* process_pkt() {
         rec_tail = NULL; 
     free(old_head);
 
-    ack = node_seq + node_len;
+    ack = node_seq + 1;
+    our_max_receiving_window += 500;
     return pkt;
 }
 
@@ -83,7 +81,7 @@ void queue(packet* pkt) {
     */
     uint16_t pkt_seq = ntohs(pkt->seq);
     uint16_t pkt_len = ntohs(pkt->length);
-    uint16_t pkt_end = pkt_seq + pkt_len;
+    uint16_t pkt_end = pkt_seq + 1;
 
     if (pkt_end <= ack) {
         free(pkt);
@@ -133,14 +131,11 @@ void queue(packet* pkt) {
     }
     // Output Decision
     // Process current in order ack and all in-order preceding packets
-    if (pkt_seq == ack) {
-        // Process immediately
-        packet* head;
-        while ((head = process_pkt()) != NULL) {
-            output(head->payload, ntohs(head->length));
-            free(head);
-            pure_ack = true;
-        }
+    packet* head;
+    while ((head = process_pkt()) != NULL) {
+        output(head->payload, ntohs(head->length));
+        free(head);
+        pure_ack = true;
     }
 }
 
@@ -170,8 +165,9 @@ packet* get_data() {
                 packet* pkt = malloc(sizeof(packet));
 
                 pkt->seq = htons(seq);
-                pkt->flags = htons(SYN);
+                pkt->flags = SYN;
                 pkt->length = htons(0);
+                pkt->win = htons(our_max_receiving_window);
                 CLIENT_SYN_SENT = true;
                 return pkt;
             }
@@ -183,8 +179,9 @@ packet* get_data() {
                 packet* pkt = malloc(sizeof(packet));
                 pkt->seq = htons(seq);
                 pkt->ack = htons(ack);
-                pkt->flags = htons(SYN | ACK);
+                pkt->flags = SYN | ACK;
                 pkt->length = htons(0);
+                pkt->win = htons(our_max_receiving_window);
                 SERVER_SYNACK_SENT = true;
                 return pkt;
             }
@@ -193,14 +190,15 @@ packet* get_data() {
         case CLIENT_AWAIT: { 
             // CLIENT becomes CLIENT_AWAIT after receiving SYN-ACK
             if (!CLIENT_ACK_SENT) {
-                seq++;
                 packet* pkt = malloc(sizeof(packet));
                 pkt->seq = htons(seq);
                 pkt->ack = htons(ack); 
-                pkt->flags = htons(ACK);
+                pkt->flags = ACK;
                 pkt->length = htons(0);
+                pkt->win = htons(our_max_receiving_window);
                 CLIENT_ACK_SENT = true;
                 state = NORMAL;
+                seq++;
                 return pkt;
             }
             return NULL;
@@ -224,12 +222,12 @@ packet* get_data() {
             pkt->ack = htons(ack);
             pkt->length = htons(bytes_read);
             pkt->win = htons(our_max_receiving_window);
-            pkt->flags = htons(0);
+            pkt->flags = ACK;
             pkt->unused = 0;
             memcpy(pkt->payload, buffer, bytes_read);
         
             our_send_window += bytes_read;
-            seq += bytes_read;
+            seq += 1;
         
             if (bytes_read > 0) {
                 buffer_node* node = malloc(sizeof(buffer_node));
@@ -254,12 +252,15 @@ packet* get_data() {
 
 // Process data received from socket
 void recv_data(packet* pkt) {
+    if(pkt == NULL) return;
+    // uint16_t flags = ntohs(pkt->flags);
+    uint16_t flags = pkt->flags;
     switch (state) {
         case SERVER_AWAIT: {
             // SERVER initializes as SERVER_AWAIT. ON RECEIVING VALID SYN:
             // SERVER gets SYN, Sends SYN-ACK
-            if (pkt != NULL && ntohs(pkt->flags) & SYN) {
-                 state = SERVER_START;
+            if  (flags & SYN) {
+                state = SERVER_START;
                 ack = ntohs(pkt->seq) + 1;
             }  
             return; 
@@ -268,7 +269,7 @@ void recv_data(packet* pkt) {
             // CLIENT initializes as CLIENT_START
             // CLIENT sends SYN
             // CURRENT: Waiting for SYN-ACK
-            if (pkt != NULL && ntohs(pkt->flags) == (SYN | ACK) && ntohs(pkt->ack) == seq) {
+            if ((flags & SYN) && (flags & ACK) && ntohs(pkt->ack) == seq + 1) {
                 // IF correct ACK is received, move on to next part of handshake
                 state = CLIENT_AWAIT;
                 ack = ntohs(pkt->seq) + 1;
@@ -277,7 +278,7 @@ void recv_data(packet* pkt) {
         }
         case SERVER_START: {
             // SERVER becomes SERVER_START after receiving SYN 
-            if (pkt != NULL && ntohs(pkt->flags) == ACK && ntohs(pkt->ack) == seq) {
+            if ((flags & ACK) && ntohs(pkt->ack) == seq) {
                 // If correct SYN  ACK  from part 3 of handshake is received, act to normal
                  state = NORMAL;
                  ack = ntohs(pkt->seq) + 1;
@@ -299,6 +300,7 @@ void recv_data(packet* pkt) {
                 if (!copy) return;
                 memcpy(copy, pkt, sizeof(packet) + payload_len);
                 queue(copy); 
+                pure_ack = true;
             }
         
             // Sender and process incoming ACKs
@@ -306,30 +308,29 @@ void recv_data(packet* pkt) {
             uint16_t incoming_ack = ntohs(pkt->ack);
         
             if (incoming_ack > last_ack) {
-                while (send_buf != NULL &&
-                       ntohs(send_buf->pkt->seq) + ntohs(send_buf->pkt->length) <= incoming_ack) {
-
+                while (send_buf != NULL && ntohs(send_buf->pkt->seq) + 1 <= incoming_ack) {
                     uint16_t pkt_seq = ntohs(send_buf->pkt->seq);
                     uint16_t pkt_len = ntohs(send_buf->pkt->length);
-                    uint16_t pkt_end = pkt_seq + pkt_len;
-                        
+                    uint16_t pkt_end = pkt_seq + 1;
+                    
+                    if (base_pkt == send_buf->pkt) {
+                        base_pkt = (send_buf->next != NULL) ? send_buf->next->pkt : NULL;
+                    }
+
                     buffer_node* tmp = send_buf;
                     send_buf = send_buf->next;
                     free(tmp->pkt);
                     free(tmp);
                 }
-                uint32_t bytes_acked = incoming_ack - last_ack;
-                if (bytes_acked > our_send_window) {
+                uint32_t packets_acked = incoming_ack - last_ack;
+                if (packets_acked > our_send_window) {
                     our_send_window = 0;
                 } else {
-                    our_send_window -= bytes_acked;
+                    our_send_window -= packets_acked * MAX_PAYLOAD;
                 }
-
-                base_pkt = (send_buf != NULL) ? send_buf->pkt : NULL;
+            
                 last_ack = incoming_ack;
                 dup_acks = 0;
-                seq = incoming_ack;
-
             }
             else if (incoming_ack == last_ack) {
                 dup_acks += 1;
@@ -419,16 +420,18 @@ void listen_loop(int sockfd, struct sockaddr_in* addr, int initial_state,
         if (bytes_recvd > 0) {
             if (debug) {
                 print_diag(pkt, RECV);
-                fprintf(stderr, "Received %d bytes\n", bytes_recvd);
             }
+                // fprintf(stderr, "Received %d bytes\n", bytes_recvd);
+            // }
             recv_data(pkt);
         }
 
         packet* tosend = get_data();
         // Data available to send
         if (tosend != NULL) {
-            if (debug)
+            if (debug) {
                 print_diag(tosend, SEND);
+            }
 
             sendto(sockfd, tosend, sizeof(packet) + ntohs(tosend->length), 0,
                 (struct sockaddr*) addr, addr_size);
@@ -436,13 +439,16 @@ void listen_loop(int sockfd, struct sockaddr_in* addr, int initial_state,
             if (is_data_packet(tosend)) {
                 gettimeofday(&start,NULL);
             }
-            if (!is_data_packet(tosend)) {
-                seq++;
-                free(tosend);
-            }
+            // if (!is_data_packet(tosend)) {
+            //     free(tosend);
+            // }
 
             if(debug) 
                 fprintf("State: %i  -  SEQ: %i  -  ACK: %i\n", state, seq, ack);
+
+            if (!(send_buf && tosend == base_pkt)) {
+                free(tosend);
+            };
         }
         // Received a packet and must send an ACK
         else if (pure_ack) {
@@ -453,13 +459,13 @@ void listen_loop(int sockfd, struct sockaddr_in* addr, int initial_state,
             ack_pkt->ack = htons(ack);
             ack_pkt->length = htons(0);
             ack_pkt->win = htons(our_max_receiving_window);
-            ack_pkt->flags = htons(ACK);
+            ack_pkt->flags = ACK;
             ack_pkt->unused = 0;
         
             sendto(sockfd, ack_pkt, sizeof(packet), 0,
                    (struct sockaddr*) addr, addr_size);
-            if (debug) 
-                print_diag(ack_pkt, SEND);
+            // if (debug) 
+            print_diag(ack_pkt, SEND);
         
             free(ack_pkt);
             pure_ack = false;
