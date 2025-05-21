@@ -214,7 +214,7 @@ packet* get_data() {
                     }
         
                     our_send_window += bytes_read;
-                    seq += 1;
+                    seq++;
                 } else {
                     // Pure ACK only
                     pkt = malloc(sizeof(packet));
@@ -226,6 +226,7 @@ packet* get_data() {
                     pkt->win = htons(our_max_receiving_window);
                     pkt->flags = ACK;
                     pkt->unused = 0;
+                    seq++;
                 }
         
                 CLIENT_ACK_SENT = true;
@@ -315,10 +316,9 @@ void recv_data(packet* pkt) {
         }
         case SERVER_START: {
             // SERVER becomes SERVER_START after receiving SYN 
-            if ((flags & ACK) && ntohs(pkt->ack) == seq) {
+            if ((flags & ACK) && ntohs(pkt->ack) == seq + 1) {
                 // If correct SYN  ACK  from part 3 of handshake is received, act to normal
                  state = NORMAL;
-                 ack = ntohs(pkt->seq) + 1;
 
                  if (ntohs(pkt->length) > 0) {
                     packet* copy = malloc(sizeof(packet) + ntohs(pkt->length));
@@ -327,6 +327,8 @@ void recv_data(packet* pkt) {
                         queue(copy);
                     }
                 }
+                seq++;
+                if (extra_debug) fprintf(stderr, "[SERVER_START REC] SEQ: %u, ACK: %u", seq, ack);
             }
             return;
         }
